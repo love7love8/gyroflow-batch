@@ -1,0 +1,201 @@
+{
+    "background_color": [
+        0.06666667014360428,
+        0.06666667014360428,
+        0.06666667014360428,
+        1
+    ],
+    "background_margin": 0,
+    "background_margin_feather": 0,
+    "background_mode": 0,
+    "calibration_data": {
+        "asymmetrical": false,
+        "calib_dimension": {
+            "h": 3072,
+            "w": 4096
+        },
+        "calibrated_by": "Lin",
+        "calibrator_version": "1.6.0",
+        "camera_brand": "小米13",
+        "camera_model": "",
+        "camera_setting": "",
+        "compatible_settings": [
+        ],
+        "crop": null,
+        "crop_factor": null,
+        "date": "",
+        "digital_lens": null,
+        "digital_lens_params": null,
+        "distortion_model": null,
+        "fisheye_params": {
+            "RMS_error": 0.5641547747077839,
+            "camera_matrix": [
+                [
+                    2797.437826576057,
+                    0,
+                    2064.81140932852
+                ],
+                [
+                    0,
+                    2795.1135903386744,
+                    1501.3655460958455
+                ],
+                [
+                    0,
+                    0,
+                    1
+                ]
+            ],
+            "distortion_coeffs": [
+                0.2452206400404363,
+                1.1275521981224597,
+                -2.776150192277245,
+                2.6495048612448087
+            ],
+            "radial_distortion_limit": null
+        },
+        "focal_length": null,
+        "fps": 24.000599,
+        "frame_readout_direction": null,
+        "frame_readout_time": null,
+        "global_shutter": false,
+        "gyro_lpf": null,
+        "identifier": "",
+        "input_horizontal_stretch": 1,
+        "input_vertical_stretch": 1,
+        "interpolations": null,
+        "lens_model": "24mm",
+        "name": "小米13__24mm__C4k_4by3_4096x3072-24.00fps",
+        "note": "",
+        "num_images": 15,
+        "official": true,
+        "orig_dimension": {
+            "h": 3072,
+            "w": 4096
+        },
+        "output_dimension": {
+            "h": 3072,
+            "w": 4096
+        },
+        "sync_settings": null
+    },
+    "gyro_source": {
+        "acc_rotation": null,
+        "gyro_bias": null,
+        "imu_orientation": "XYZ",
+        "integration_method": 1,
+        "lpf": 0,
+        "mf": 0,
+        "rotation": null
+    },
+    "light_refraction_coefficient": 1,
+    "muted": false,
+    "name": "24mm3",
+    "output": {
+        "audio": true,
+        "audio_codec": "AAC",
+        "bitrate": 200,
+        "codec": "H.265/HEVC",
+        "codec_options": "",
+        "encoder_options": "",
+        "export_trims_separately": false,
+        "interpolation": "Lanczos4",
+        "keyframe_distance": 1,
+        "metadata": {
+            "comment": ""
+        },
+        "output_filename": "",
+        "output_folder": "file:///Volumes/xiaomi13/gy稳定/260307_103108_xiaomi13_24mm/",
+        "output_height": 2880,
+        "output_width": 3840,
+        "pad_with_black": false,
+        "preserve_other_tracks": false,
+        "use_gpu": true
+    },
+    "playback_speed": 1,
+    "stabilization": {
+        "adaptive_zoom_center_offset": [
+            0,
+            0
+        ],
+        "adaptive_zoom_method": 1,
+        "adaptive_zoom_window": 4,
+        "additional_rotation": [
+            0,
+            0,
+            0
+        ],
+        "additional_translation": [
+            0,
+            0,
+            0
+        ],
+        "fov": 1,
+        "frame_readout_direction": "TopToBottom",
+        "frame_readout_time": 17.562680886618452,
+        "horizon_lock_amount": 0,
+        "horizon_lock_roll": 0,
+        "lens_correction_amount": 1,
+        "max_zoom": 130,
+        "max_zoom_iterations": 5,
+        "method": "Default",
+        "smoothing_params": [
+            {
+                "name": "smoothness",
+                "value": 0.5
+            },
+            {
+                "name": "smoothness_pitch",
+                "value": 0.5
+            },
+            {
+                "name": "smoothness_yaw",
+                "value": 0.5
+            },
+            {
+                "name": "smoothness_roll",
+                "value": 0.5
+            },
+            {
+                "name": "per_axis",
+                "value": 0
+            },
+            {
+                "name": "trim_range_only",
+                "value": 1
+            },
+            {
+                "name": "max_smoothness",
+                "value": 1
+            },
+            {
+                "name": "alpha_0_1s",
+                "value": 0.1
+            }
+        ],
+        "use_gravity_vectors": false,
+        "video_speed": 1,
+        "video_speed_affects_smoothing": true,
+        "video_speed_affects_zooming": true,
+        "video_speed_affects_zooming_limit": true
+    },
+    "synchronization": {
+        "auto_sync_points": true,
+        "calc_initial_fast": false,
+        "do_autosync": true,
+        "every_nth_frame": 1,
+        "initial_offset": 0,
+        "initial_offset_inv": false,
+        "max_sync_points": 3,
+        "of_method": 2,
+        "offset_method": 2,
+        "pose_method": 0,
+        "search_size": 5,
+        "time_per_syncpoint": 1.5
+    },
+    "version": 2,
+    "video_info": {
+        "fps_scale": null,
+        "vfr_fps": 24
+    }
+}

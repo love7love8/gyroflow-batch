@@ -1,0 +1,68 @@
+好，你可以这样用：
+
+---
+
+## 详细使用方法
+
+### 第一步：打开文件修改配置
+
+**方法1：用文本编辑打开（最简单）**
+1. 在桌面找到 `gyroflow_batch.py`
+2. 右键 → 打开方式 → **文本编辑.app**
+
+**方法2：用 VS Code 或其它代码编辑器**
+1. 右键 → 打开方式 → 选择你用的编辑器
+
+**方法3：用终端**
+```bash
+open -e ~/Desktop/gyroflow_batch.py
+```
+
+### 第二步：修改配置
+
+打开后找到 `CONFIG = {` 这一块，修改三个地方：
+
+```python
+CONFIG = {
+    "preset": "把你的预设文件路径填在这里",
+    "base_dir": "把你的素材目录填在这里",
+    "sequences": [
+        "素材1名称",
+        "素材2名称",
+    ],
+    "btn_coords": (X, Y),  # 按钮坐标
+}
+```
+
+改完后 Cmd+S 保存。
+
+### 第三步：运行
+
+打开终端，粘贴以下命令：
+
+```bash
+python3 ~/Desktop/gyroflow_batch.py
+```
+
+终端会显示提示，**确认英文输入法后按 Enter**，程序就开始自动处理了。
+
+---
+
+### 示例：处理你 ceshigy 的素材
+
+配置文件改成：
+
+```python
+CONFIG = {
+    "preset": "/Volumes/mac非遗项目备份/lin/grrofolw-json/24mm.gyroflow",
+    "base_dir": "/Volumes/xiaomi13/ceshigy",
+    "sequences": [
+        "260516_134158_xiaomi13_24mm",
+        "260516_134208_xiaomi13_24mm",
+        "260516_134220_xiaomi13_24mm",
+    ],
+    "btn_coords": (290, 688),
+}
+```
+
+然后终端跑 `python3 ~/Desktop/gyroflow_batch.py` 就行。
