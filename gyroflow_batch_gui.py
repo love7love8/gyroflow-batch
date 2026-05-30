@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-Gyroflow 批量处理工具 — GUI 版 v2
+Gyroflow 批量处理工具 — GUI 版 v3
 双击打开，原生 macOS 对话框选择文件，无需手动改代码。
+
+v3 新增:
+  - 视频模式：支持 MP4/MOV 视频文件（配合 GCSV 运动数据）
+  - DNG/视频双模式切换
 
 修复/优化:
   - 同步超时不再保存废文件
@@ -14,9 +18,10 @@ Gyroflow 批量处理工具 — GUI 版 v2
   - 实时进度预估
   - 同步超时时间可调
 """
-import pyautogui, subprocess, time, os, re, json, sys, tempfile, shlex
+import pyautogui, subprocess, time, os, re, json, sys, tempfile, shlex, shutil
 
 pyautogui.FAILSAFE = False
+GYROFLOW_BIN = "/Applications/Gyroflow.app/Contents/MacOS/gyroflow"
 
 # ── 配置保存 ──────────────────────────────────────────────
 CONFIG_FILE = os.path.expanduser("~/.gyroflow_batch_config.json")
@@ -24,10 +29,16 @@ CONFIG_FILE = os.path.expanduser("~/.gyroflow_batch_config.json")
 DEFAULT_CONFIG = {
     "base_dir": "",
     "gcsv_dir": "",
+    "lens_dir": "",
+    "export_dir": "",
     "btn_coords": [],
     "sync_coords": [],
+    "lens_coords": [],
+    "export_coords": [],
     "last_sequences": [],
     "sync_timeout": 120,
+    "export_timeout": 600,
+    "export_mode": "project",
     "screen_resolution": "",
 }
 
@@ -52,6 +63,9 @@ def _escape_as(s):
 
 # ── 原生对话框 ────────────────────────────────────────────
 def osa_dialog(message, buttons=["取消", "确定"], default="确定", icon="note"):
+    # 兜底：如果 default 不在 buttons 里，用最后一个 button 作为 default
+    if default not in buttons:
+        default = buttons[-1]
     btn = ','.join(f'"{b}"' for b in buttons)
     ico = f'with icon {icon}' if icon else ''
     msg = _escape_as(message)
@@ -130,86 +144,126 @@ def osa_text_input(prompt, default_text=""):
     return None
 
 # ── 坐标拾取器 ────────────────────────────────────────────
-def pick_coordinates(default_coords=None):
-    """拾取按钮坐标：可视化点击 或 手动输入"""
-    default_str = ""
-    if default_coords:
-        default_str = f"{default_coords[0]},{default_coords[1]}"
+def pick_all_coordinates(need_export=False, saved_btn=None, saved_sync=None, saved_lens=None, saved_export=None):
+    """统一坐标输入窗口 — 一次性输入所有按钮坐标
     
-    # 合并为单个对话框（原来的两个合并为一个）
-    ans = osa_dialog(
-        "如何获取按钮坐标？\n\n"
-        "【可视化拾取】屏幕变暗 → 点按钮 → 自动记录\n"
-        "【手动输入】直接输入坐标值（如 128,697）\n\n"
-        "\u26a0\ufe0f 换了电脑/屏幕请务必重新拾取！",
-        ["取消", "手动输入", "可视化拾取"],
-        "可视化拾取"
-    )
+    使用 Shift+Cmd+4 截图工具可以快速获取屏幕坐标（拖动时显示坐标值）。
+    屏幕分辨率变化后必须重新拾取。
     
-    if ans == "可视化拾取":
-        # 写临时脚本（中文提示，避免 emoji/shell 问题）
-        picker_code = '''import tkinter as tk, sys
-class Picker:
-    def __init__(self):
-        self.r = tk.Tk()
-        self.r.title("Pick Coords")
-        self.r.attributes('-fullscreen', True)
-        self.r.attributes('-alpha', 0.38)
-        self.r.attributes('-topmost', True)
-        self.r.configure(bg='black', cursor='crosshair')
-        f = tk.Frame(self.r, bg='black')
-        f.pack(expand=True)
-        tk.Label(f, text='\u8bf7\u70b9\u51fb Gyroflow \u7a97\u53e3\u4e2d',
-                 font=('PingFang SC', 26, 'bold'), fg='white', bg='black',
-                 justify='center').pack(pady=(0, 3))
-        tk.Label(f, text='\u300c\u8fd0\u52a8\u6570\u636e\u300d\u4e0b\u65b9\u7684\u300c\u6253\u5f00\u6587\u4ef6\u300d\u6309\u94ae',
-                 font=('PingFang SC', 26, 'bold'), fg='white', bg='black',
-                 justify='center').pack(pady=(0, 12))
-        tk.Label(f, text='\u6309 ESC \u53d6\u6d88',
-                 font=('PingFang SC', 15), fg='#666', bg='black').pack()
-        self.r.bind('<Button-1>', self.click)
-        self.r.bind('<Escape>', lambda e: sys.exit(1))
-    def click(self, e):
-        cv = tk.Canvas(self.r, width=60, height=60, bg='black', highlightthickness=0)
-        cv.place(x=e.x_root-30, y=e.y_root-30)
-        cv.create_line(15, 30, 45, 30, fill='red', width=3)
-        cv.create_line(30, 15, 30, 45, fill='red', width=3)
-        cv.create_oval(5, 5, 55, 55, outline='red', width=2)
-        self.r.after(500, lambda: self.done(e.x_root, e.y_root))
-    def done(self, x, y):
-        print(f"{x},{y}")
-        self.r.destroy()
-Picker().r.mainloop()'''
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-            f.write(picker_code)
-            tmp_path = f.name
-        r = subprocess.run(['/usr/bin/python3', tmp_path], capture_output=True, text=True)
-        os.unlink(tmp_path)
-        if r.returncode != 0:
-            print(f"坐标拾取出错: {r.stderr}")
-            return None
+    need_export: 是否需要导出按钮坐标（视频导出模式）
+    返回 (btn_coords, sync_coords, lens_coords, export_coords) 或 None（取消）
+    """
+    import tkinter as tk
+    
+    result = {'btn': None, 'sync': None, 'lens': None, 'export': None, 'done': False}
+    
+    root = tk.Tk()
+    root.title("Gyroflow 批量处理 — 输入按钮坐标")
+    root.resizable(False, False)
+    root.attributes('-topmost', True)
+    w = 480
+    # 4 行固定（运动数据、同步、镜头），+1 可选（导出）
+    h = 300 + (60 if need_export else 0)
+    root.geometry(f"{w}x{h}")
+    
+    # ── 顶部提示 ──
+    info = tk.Frame(root, bg='#e8f0fe', padx=14, pady=10)
+    info.pack(fill='x')
+    tk.Label(info,
+        text='💡 使用 Shift+Cmd+4 截图即可看到光标坐标值\n'
+             '⚠️ 更换屏幕/外接显示器后必须重新拾取坐标',
+        font=('PingFang SC', 12), justify='left',
+        bg='#e8f0fe', fg='#1a1a2e'
+    ).pack(anchor='w')
+    
+    # ── 输入区域 ──
+    fields = tk.Frame(root, padx=16, pady=8)
+    fields.pack(fill='x', expand=True)
+    
+    def make_row(parent, label_text, saved_val, row):
+        """创建一行: [标签] [X输入框] , [Y输入框]"""
+        tk.Label(parent, text=label_text, font=('PingFang SC', 13),
+                 anchor='e', width=18).grid(row=row, column=0, sticky='e', padx=(0, 8))
+        x_var = tk.StringVar()
+        y_var = tk.StringVar()
+        if saved_val and len(saved_val) == 2:
+            x_var.set(str(saved_val[0]))
+            y_var.set(str(saved_val[1]))
+        x_entry = tk.Entry(parent, textvariable=x_var, font=('Menlo', 14),
+                          width=6, justify='center')
+        x_entry.grid(row=row, column=1)
+        tk.Label(parent, text=',', font=('Menlo', 14)).grid(row=row, column=2, padx=2)
+        y_entry = tk.Entry(parent, textvariable=y_var, font=('Menlo', 14),
+                          width=6, justify='center')
+        y_entry.grid(row=row, column=3)
+        return x_var, y_var
+    
+    # 四行输入（导出按钮可选）
+    btn_x, btn_y = make_row(fields, '打开运动数据:', saved_btn, 0)
+    sync_x, sync_y = make_row(fields, '自动同步:', saved_sync, 1)
+    lens_x, lens_y = make_row(fields, '打开镜头配置:', saved_lens, 2)
+    export_x, export_y = None, None
+    if need_export:
+        export_x, export_y = make_row(fields, '导出视频:', saved_export, 3)
+    
+    # ── 按钮区 ──
+    btn_frame = tk.Frame(root, padx=16, pady=14)
+    btn_frame.pack(fill='x')
+    
+    def parse_coords(x_var, y_var):
         try:
-            x, y = r.stdout.strip().split(',')
-            return (int(x), int(y))
-        except:
-            return None
+            x = int(x_var.get().strip())
+            y = int(y_var.get().strip())
+            if x > 0 and y > 0:
+                return (x, y)
+        except ValueError:
+            pass
+        return None
     
-    elif ans == "手动输入":
-        result = osa_text_input("请输入按钮坐标（格式: x,y）", default_str)
-        if not result:
-            return None
-        try:
-            x, y = result.replace(' ', '').split(',')
-            return (int(x), int(y))
-        except:
-            osa_dialog("坐标格式错误，请使用 x,y 格式（如 128,697）", ["确定"], icon="stop")
-            return None
+    def on_ok():
+        b = parse_coords(btn_x, btn_y)
+        s = parse_coords(sync_x, sync_y)
+        l = parse_coords(lens_x, lens_y)
+        if not b or not s or not l:
+            tk.messagebox.showwarning("输入错误", "请填写所有必填坐标（正整数）", parent=root)
+            return
+        result['btn'] = b
+        result['sync'] = s
+        result['lens'] = l
+        if need_export:
+            e = parse_coords(export_x, export_y)
+            if not e:
+                tk.messagebox.showwarning("输入错误", "请填写导出按钮坐标", parent=root)
+                return
+            result['export'] = e
+        else:
+            result['export'] = None
+        result['done'] = True
+        root.destroy()
     
-    return None
+    def on_cancel():
+        root.destroy()
+    
+    # Enter 键触发确定
+    root.bind('<Return>', lambda e: on_ok())
+    root.bind('<Escape>', lambda e: on_cancel())
+    
+    tk.Button(btn_frame, text='取消', font=('PingFang SC', 13),
+              width=10, command=on_cancel).pack(side='right', padx=8)
+    tk.Button(btn_frame, text='确定', font=('PingFang SC', 13, 'bold'),
+              width=10, bg='#4a90d9', fg='white', command=on_ok).pack(side='right')
+    
+    # 聚焦第一个输入框
+    fields.focus_set()
+    root.mainloop()
+    
+    if not result['done']:
+        return None
+    return (result['btn'], result['sync'], result['lens'], result['export'])
 
 # ── 素材扫描与预检 ────────────────────────────────────────
 def scan_sequences(base_dir):
-    """扫描目录下所有包含 DNG 序列帧的素材"""
+    """DNG 模式：扫描目录下所有包含 DNG 序列帧的素材"""
     if not os.path.isdir(base_dir):
         return []
     sequences = []
@@ -223,11 +277,29 @@ def scan_sequences(base_dir):
             sequences.append(f"{name}  {has_gcsv}")
     return sequences
 
+def scan_videos(base_dir):
+    """视频模式：扫描目录下所有 MP4/MOV 视频文件"""
+    if not os.path.isdir(base_dir):
+        return []
+    videos = []
+    supported_exts = ('.mp4', '.mov', '.MP4', '.MOV')
+    for name in sorted(os.listdir(base_dir)):
+        if name.startswith('.'):
+            continue
+        full = os.path.join(base_dir, name)
+        if not os.path.isfile(full):
+            continue
+        if name.endswith(supported_exts):
+            video_name = os.path.splitext(name)[0]
+            has_gcsv = "✅" if os.path.exists(os.path.join(base_dir, f"{video_name}.gcsv")) else "⚠️ 缺GCSV"
+            videos.append(f"{name}  {has_gcsv}")
+    return videos
+
 def parse_seq_name(seq_str):
     return seq_str.split()[0]
 
 def precheck(sequences, base_dir, gcsv_dir):
-    """预检所有文件，返回 (ok_list, fail_list)"""
+    """DNG 模式预检：返回 (ok_list, fail_list)"""
     ok_list = []
     fail_list = []
     for seq in sequences:
@@ -244,6 +316,42 @@ def precheck(sequences, base_dir, gcsv_dir):
             ok_list.append(seq)
     
     return ok_list, fail_list
+
+def precheck_videos(video_files, base_dir, gcsv_dir):
+    """视频模式预检：返回 (ok_list, fail_list)"""
+    ok_list = []
+    fail_list = []
+    for vf in video_files:
+        video_path = os.path.join(base_dir, vf)
+        video_name = os.path.splitext(vf)[0]
+        gcsv = os.path.join(gcsv_dir, f"{video_name}.gcsv")
+        issues = []
+        if not os.path.exists(video_path):
+            issues.append(f"缺视频文件: {video_path}")
+        if not os.path.exists(gcsv):
+            issues.append(f"缺 GCSV: {gcsv}")
+        if issues:
+            fail_list.append((vf, ", ".join(issues)))
+        else:
+            ok_list.append(vf)
+    
+    return ok_list, fail_list
+
+# ── 镜头配置文件匹配 ──────────────────────────────────────
+def get_lens_file(item_name):
+    """根据素材文件名匹配镜头校准 JSON 文件
+    
+    规则:
+      - 文件名含 "24mm" → 1xiaomi_24mm_4096:3072.json
+      - 文件名含 "66mm" → 3xiaomi_66mm_3648:2752.json
+    返回文件名，若无法匹配返回 None
+    """
+    name_lower = item_name.lower()
+    if '24mm' in name_lower:
+        return '1xiaomi_24mm_4096:3072.json'
+    elif '66mm' in name_lower:
+        return '3xiaomi_66mm_3648:2752.json'
+    return None
 
 # ── 核心处理逻辑 ──────────────────────────────────────────
 def log(msg):
@@ -278,16 +386,36 @@ def wait_for_sync(timeout=120):
     log(f"⚠️ 同步超时 ({timeout}秒)")
     return False
 
-def validate_project(dng_dir, seq_name):
+def wait_for_export(timeout=600):
+    """等待视频导出完成，timeout 可配置"""
+    idle = 0
+    waited = 0
+    while waited < timeout:
+        cpu = get_gyroflow_cpu()
+        if cpu is not None and cpu < 10.0:
+            idle += 1
+            if idle >= 6:  # 连续 12 秒低 CPU
+                log(f"导出完成 (CPU={cpu}%)")
+                return True
+        else:
+            idle = 0
+        if waited % 30 == 0 and waited > 0:
+            log(f"  导出中... ({waited}秒, CPU={cpu}%)")
+        time.sleep(2)
+        waited += 2
+    log(f"⚠️ 导出超时 ({timeout}秒)")
+    return False
+
+def validate_project(save_dir, item_name):
     """验证保存的项目文件是否完整（GCSV + 镜头参数）"""
-    saved_files = [f for f in os.listdir(dng_dir) 
+    saved_files = [f for f in os.listdir(save_dir) 
                    if f.endswith('.gyroflow') and not f.startswith('._')]
     if not saved_files:
         log(f"⚠️ 未找到项目文件")
         return False
     
     latest = sorted(saved_files)[-1]
-    fp = os.path.join(dng_dir, latest)
+    fp = os.path.join(save_dir, latest)
     
     try:
         with open(fp) as fh:
@@ -313,17 +441,29 @@ def validate_project(dng_dir, seq_name):
         log(f"   ⚠️ 项目文件解析失败: {e}")
         return False
 
-def process_one(seq_name, base_dir, gcsv_dir, btn_coords, sync_coords, sync_timeout=120):
-    """处理单个素材，返回 (success, message)"""
-    dng = os.path.join(base_dir, seq_name, f"{seq_name}-000010.dng")
-    gcsv = os.path.join(gcsv_dir, f"{seq_name}.gcsv")
-    dng_dir = os.path.dirname(dng)
+def process_one(item_name, base_dir, gcsv_dir, lens_dir, export_dir, btn_coords, sync_coords, sync_timeout=120, mode="dng", export_mode="project", export_coords=None, export_timeout=600, lens_coords=None):
+    """处理单个素材，返回 (success, message)
+    mode: "dng" — DNG 序列帧 | "video" — MP4/MOV 视频
+    export_mode: "project" — 保存 .gyroflow | "video" — CLI 渲染稳定视频（仅视频模式有效）
+    """
+    if mode == "dng":
+        media_path = os.path.join(base_dir, item_name, f"{item_name}-000010.dng")
+        gcsv_name = item_name
+        save_dir = os.path.dirname(media_path)
+        media_label = "DNG"
+    else:  # video
+        media_path = os.path.join(base_dir, item_name)
+        gcsv_name = os.path.splitext(item_name)[0]
+        save_dir = base_dir
+        media_label = "视频"
     
-    if not os.path.exists(dng):
-        return False, f"DNG 文件不存在"
+    gcsv = os.path.join(gcsv_dir, f"{gcsv_name}.gcsv")
+    
+    if not os.path.exists(media_path):
+        return False, f"{media_label} 文件不存在"
     if not os.path.exists(gcsv):
         return False, f"GCSV 文件不存在"
-    log(f"=== 处理: {seq_name} ===")
+    log(f"=== 处理: {item_name} ===")
     
     # 关闭已有 Gyroflow（更安全地关闭）
     subprocess.run(['pkill', '-f', 'Gyroflow'], capture_output=True)
@@ -331,13 +471,38 @@ def process_one(seq_name, base_dir, gcsv_dir, btn_coords, sync_coords, sync_time
     subprocess.run(['pkill', '-9', '-f', 'Gyroflow'], capture_output=True)
     time.sleep(1)
     
-    # Step 1-2: 加载 DNG
-    log("Step 1-2: 加载 DNG")
-    subprocess.run(['open', '-a', 'Gyroflow']); time.sleep(8)
-    subprocess.run(['open', '-a', 'Gyroflow', dng]); time.sleep(8)
-    subprocess.run(['osascript', '-e', 'tell application "gyroflow" to activate']); time.sleep(1)
-    subprocess.run(['osascript', '-e', 'tell application "System Events" to key code 36']); time.sleep(7)
-    log("✅ DNG 加载完毕")
+    # Step 1-2: 加载素材
+    if mode == "dng":
+        log("Step 1-2: 加载 DNG")
+        log(f"  路径: {media_path}")
+        r = subprocess.run(['open', '-a', 'Gyroflow'], capture_output=True, text=True)
+        log(f"  启动 Gyroflow → exit={r.returncode} stderr={r.stderr.strip()!r}")
+        time.sleep(8)
+        r = subprocess.run(['open', '-a', 'Gyroflow', media_path], capture_output=True, text=True)
+        log(f"  打开 DNG → exit={r.returncode} stderr={r.stderr.strip()!r}")
+        time.sleep(8)
+        # 验证 Gyroflow 进程是否在运行
+        ps = subprocess.run(['pgrep', '-l', 'Gyroflow'], capture_output=True, text=True)
+        log(f"  Gyroflow 进程: {ps.stdout.strip() or '❌ 未找到'}")
+        subprocess.run(['osascript', '-e', 'tell application "gyroflow" to activate']); time.sleep(1)
+        subprocess.run(['osascript', '-e', 'tell application "System Events" to key code 36']); time.sleep(7)
+        log("✅ DNG 加载完毕")
+    else:
+        log("Step 1-2: 加载视频")
+        log(f"  路径: {media_path}")
+        r = subprocess.run(['open', '-a', 'Gyroflow'], capture_output=True, text=True)
+        log(f"  启动 Gyroflow → exit={r.returncode} stderr={r.stderr.strip()!r}")
+        time.sleep(8)
+        r = subprocess.run(['open', '-a', 'Gyroflow', media_path], capture_output=True, text=True)
+        log(f"  打开视频 → exit={r.returncode} stderr={r.stderr.strip()!r}")
+        time.sleep(8)
+        # 验证 Gyroflow 进程是否在运行
+        ps = subprocess.run(['pgrep', '-l', 'Gyroflow'], capture_output=True, text=True)
+        log(f"  Gyroflow 进程: {ps.stdout.strip() or '❌ 未找到'}")
+        subprocess.run(['osascript', '-e', 'tell application "gyroflow" to activate']); time.sleep(1)
+        # 视频直接打开，不需要 Enter 确认序列帧
+        time.sleep(5)
+        log("✅ 视频加载完毕")
     
     # Step 3: 加载运动数据
     log("Step 3: 加载运动数据 (GCSV)")
@@ -345,12 +510,42 @@ def process_one(seq_name, base_dir, gcsv_dir, btn_coords, sync_coords, sync_time
     pyautogui.click(btn_x, btn_y)
     time.sleep(6)
     pyautogui.hotkey('command', 'shift', 'g')
-    time.sleep(4)
+    time.sleep(1)
+    pyautogui.keyUp('shift')  # 确保 Shift 释放，避免后续输入被修饰
+    time.sleep(3)
     pyautogui.typewrite(gcsv, interval=0.1)
     time.sleep(4)
     pyautogui.press('return'); time.sleep(3)
-    pyautogui.press('return'); time.sleep(6)
+    pyautogui.press('return'); time.sleep(3)
     log("✅ 运动数据加载完毕")
+    
+    # Step 3.2: 加载镜头校准配置
+    lens_file = get_lens_file(item_name)
+    if lens_file and lens_coords and lens_dir:
+        lens_path = os.path.join(lens_dir, lens_file)
+        log(f"Step 3.2: 加载镜头配置 → {lens_file}")
+        if os.path.exists(lens_path):
+            lens_x, lens_y = lens_coords
+            pyautogui.click(lens_x, lens_y)
+            time.sleep(5)  # 等待文件浏览器弹出
+            pyautogui.hotkey('command', 'shift', 'g')
+            time.sleep(1)
+            pyautogui.keyUp('shift')
+            time.sleep(2)
+            pyautogui.typewrite(lens_dir, interval=0.1)
+            time.sleep(3)
+            pyautogui.press('return'); time.sleep(3)
+            # 选择镜头文件
+            pyautogui.typewrite(lens_file, interval=0.1)
+            time.sleep(3)
+            pyautogui.press('return'); time.sleep(3)
+            log(f"✅ 镜头配置加载完毕")
+        else:
+            log(f"   ⚠️ 镜头文件不存在: {lens_path}")
+    elif not lens_file:
+        log(f"   ⓘ 镜头跳过: '{item_name}' 不含 24mm/66mm，无需加载")
+    else:
+        log(f"   ⚠️ 镜头跳过: lens_file={lens_file!r} lens_coords={lens_coords!r} lens_dir={lens_dir!r}")
     
     # Step 3.5: 点击自动同步按钮
     log("Step 3.5: 触发自动同步")
@@ -368,22 +563,49 @@ def process_one(seq_name, base_dir, gcsv_dir, btn_coords, sync_coords, sync_time
         log("❌ 同步超时，跳过保存")
         return False, "同步超时"
     
-    # Step 5: 保存项目
-    log("Step 5: 保存项目")
-    subprocess.run(['osascript', '-e', 'tell application "gyroflow" to activate'])
-    time.sleep(2)
-    pyautogui.hotkey('command', 's'); time.sleep(4)
-    pyautogui.press('return'); time.sleep(4)
-    log("✅ 项目已保存")
-    
-    # Step 6: 验证
-    log("Step 6: 验证项目")
-    valid = validate_project(dng_dir, seq_name)
-    
-    if valid:
-        return True, "成功"
+    # Step 5: 保存项目 / GUI 导出视频
+    if mode == "video" and export_mode == "video":
+        # ── GUI 导出稳定视频 → 不保存 .gyroflow ──
+        log("Step 5: GUI 导出稳定视频")
+        if not export_coords:
+            return False, "缺少导出按钮坐标"
+        export_x, export_y = export_coords
+        
+        # 记录导出前文件数
+        video_exts = {'.mp4', '.mov', '.MP4', '.MOV'}
+        before_count = len([f for f in os.listdir(save_dir)
+                           if os.path.splitext(f)[1] in video_exts and not f.startswith('._')])
+        
+        # 点击导出按钮 → 导出开始
+        pyautogui.click(export_x, export_y)
+        time.sleep(3)
+        
+        log(f"⏳ 等待视频导出（最长 {export_timeout} 秒）...")
+        exported = wait_for_export(timeout=export_timeout)
+        
+        if not exported:
+            log("❌ 视频导出超时")
+            return False, "视频导出超时"
+        
+        # 验证：文件数是否增加
+        after_count = len([f for f in os.listdir(save_dir)
+                          if os.path.splitext(f)[1] in video_exts and not f.startswith('._')])
+        if after_count > before_count:
+            log(f"✅ 导出成功（{save_dir} 内视频文件: {before_count} → {after_count}）")
+            return True, "导出成功"
+        else:
+            log(f"⚠️ 文件数未变化 ({before_count} → {after_count})，可能导出到了其他位置")
+            return False, "未检测到输出文件"
     else:
-        return False, "验证未通过"
+        # ── 保存 .gyroflow 项目文件 ──
+        log("Step 5: 保存项目")
+        subprocess.run(['osascript', '-e', 'tell application "gyroflow" to activate'])
+        time.sleep(2)
+        pyautogui.hotkey('command', 's'); time.sleep(3)
+        pyautogui.press('return'); time.sleep(4)
+        log("✅ 项目已保存")
+    
+    return True, "成功"
 
 # ── 格式化工具 ────────────────────────────────────────────
 def format_time(seconds):
@@ -400,26 +622,70 @@ def format_time(seconds):
 def main():
     print()
     print("=" * 55)
-    print("  Gyroflow 批量处理工具 v2")
+    print("  Gyroflow 批量处理工具 v3")
     print("=" * 55)
     print()
     
     cfg = load_config()
+    
+    # ── 模式选择 ──
+    print()
+    mode_ans = osa_dialog(
+        "选择处理模式：\n\n"
+        "【DNG 模式】处理 DNG 序列帧文件夹\n"
+        "  素材结构: 文件夹名/文件夹名-000010.dng\n\n"
+        "【视频模式】处理 MP4/MOV 视频文件\n"
+        "  素材结构: 视频文件名.mp4 + 视频文件名.gcsv",
+        ["取消", "视频模式", "DNG 模式"],
+        "DNG 模式"
+    )
+    if not mode_ans or mode_ans == "取消":
+        print("❌ 已取消")
+        return
+    mode = "dng" if "DNG" in mode_ans else "video"
+    print(f"  处理模式 → {mode_ans}")
+    
+    # ── 视频模式：导出方式选择 ──
+    export_mode = "project"
+    export_coords = None
+    export_timeout = 600
+    if mode == "video":
+        export_saved = cfg.get('export_mode', 'project')
+        export_default = "保存 .gyroflow 项目" if export_saved == "project" else "导出稳定视频"
+        export_ans = osa_dialog(
+            "视频导出方式：\n\n"
+            "【保存项目】Cmd+S → 保存 .gyroflow 项目文件（快）\n"
+            "【导出视频】渲染导出稳定后的视频文件（慢，耗时较长）",
+            ["保存 .gyroflow 项目", "导出稳定视频"],
+            default=export_default
+        )
+        if not export_ans:
+            print("❌ 已取消")
+            return
+        export_mode = "video" if "导出" in export_ans else "project"
+        print(f"  导出方式 → {export_ans}")
     
     # ── 英文输入法提醒 ──
     osa_dialog(
         "⚠️ 请确认：\n\n"
         "按 Caps Lock 键切换到【英文输入法】\n\n"
         "整个处理过程需要保持英文输入状态。",
-        ["知道了"]
+        ["知道了"],
+        default="知道了"
     )
     
-    # ── Step 1: 选择 DNG 素材目录 ──
+    # ── Step 1: 选择素材目录 ──
     print()
-    print("【1/4】选择 DNG 序列帧素材目录")
+    if mode == "dng":
+        print("【1/4】选择 DNG 序列帧素材目录")
+        choose_prompt = "选择包含 DNG 序列帧文件夹的目录"
+    else:
+        print("【1/4】选择视频素材目录")
+        choose_prompt = "选择包含 MP4/MOV 视频文件的目录"
+    
     base_default = cfg.get('base_dir', '')
     base_dir = osa_choose_folder(
-        "选择包含 DNG 序列帧文件夹的目录",
+        choose_prompt,
         default_dir=base_default if base_default else ""
     )
     if not base_dir:
@@ -427,18 +693,25 @@ def main():
         return
     print(f"  素材目录 → {base_dir}")
     
-    seq_list = scan_sequences(base_dir)
-    if not seq_list:
-        print(f"\n⚠️ 在 {base_dir} 中未找到包含 DNG 序列帧的文件夹\n"
-              "   请确保文件夹命名格式: 素材名/素材名-000010.dng")
-        osa_dialog("未找到包含 DNG 序列帧的素材文件夹。\n\n请确认目录和文件命名正确。", ["确定"])
-        return
+    if mode == "dng":
+        item_list = scan_sequences(base_dir)
+        if not item_list:
+            print(f"\n⚠️ 在 {base_dir} 中未找到包含 DNG 序列帧的文件夹\n"
+                  "   请确保文件夹命名格式: 素材名/素材名-000010.dng")
+            osa_dialog("未找到包含 DNG 序列帧的素材文件夹。\n\n请确认目录和文件命名正确。", ["确定"])
+            return
+    else:
+        item_list = scan_videos(base_dir)
+        if not item_list:
+            print(f"\n⚠️ 在 {base_dir} 中未找到 MP4/MOV 视频文件")
+            osa_dialog("未找到 MP4/MOV 视频文件。\n\n请确认目录中有视频文件。", ["确定"])
+            return
     
-    print(f"\n  扫描到 {len(seq_list)} 个素材：")
-    for s in seq_list:
+    print(f"\n  扫描到 {len(item_list)} 个素材：")
+    for s in item_list:
         print(f"    · {s}")
     
-    # ── Step C: 选择 GCSV 目录 ──
+    # ── Step 2: 选择 GCSV 目录 ──
     print()
     print("【2/4】选择 GCSV 运动数据目录")
     print("  （通常与素材目录相同，直接按「选择」即可）")
@@ -451,6 +724,20 @@ def main():
         print("❌ 已取消")
         return
     print(f"  GCSV 目录 → {gcsv_dir}")
+    
+    # ── Step 2.5: 选择镜头校准目录 ──
+    print()
+    print("【镜头】选择镜头校准 JSON 目录")
+    print("  （包含 1xiaomi_24mm_4096/3072.json、3xiaomi_66mm_3648/2752.json 等）")
+    lens_default = cfg.get('lens_dir', base_dir)
+    lens_dir = osa_choose_folder(
+        "选择镜头校准 JSON 文件所在目录",
+        default_dir=lens_default if lens_default else base_dir
+    )
+    if not lens_dir:
+        print("❌ 已取消")
+        return
+    print(f"  镜头目录 → {lens_dir}")
     
     # ── 屏幕分辨率检查 ──
     current_res = f"{pyautogui.size().width}x{pyautogui.size().height}"
@@ -467,47 +754,41 @@ def main():
             icon="caution"
         )
     
-    # ── Step 3: 拾取打开文件按钮坐标 ──
+    # ── 坐标输入：统一窗口 ──
     print()
-    print("【3/4】拾取「打开文件」按钮坐标")
-    print("  提示：请先打开 Gyroflow，")
-    print("        界面左下角「运动数据」下方就是「打开文件」按钮")
+    print("【坐标】输入按钮坐标")
+    print("  提示：使用 Shift+Cmd+4 截图查看光标坐标")
+    print("        屏幕/分辨率变化后需要重新拾取")
     print()
     
-    btn_coords = pick_coordinates(
-        default_coords=tuple(cfg.get('btn_coords', [])) if cfg.get('btn_coords') else None
+    all_coords = pick_all_coordinates(
+        need_export=(mode == "video" and export_mode == "video"),
+        saved_btn=cfg.get('btn_coords') if cfg.get('btn_coords') else None,
+        saved_sync=cfg.get('sync_coords') if cfg.get('sync_coords') else None,
+        saved_lens=cfg.get('lens_coords') if cfg.get('lens_coords') else None,
+        saved_export=cfg.get('export_coords') if cfg.get('export_coords') else None
     )
-    if not btn_coords:
-        print("❌ 坐标拾取失败或已取消")
+    if not all_coords:
+        print("❌ 已取消")
         return
-    print(f"  打开文件按钮 → {btn_coords}")
-    
-    # ── 拾取自动同步按钮坐标 ──
-    print()
-    print("【4/4】拾取「自动同步」按钮坐标")
-    print("  提示：在 Gyroflow 界面中找到「自动同步」按钮，")
-    print("        通常位于运动数据区域附近")
-    print()
-    
-    sync_coords = pick_coordinates(
-        default_coords=tuple(cfg.get('sync_coords', [])) if cfg.get('sync_coords') else None
-    )
-    if not sync_coords:
-        print("❌ 坐标拾取失败或已取消")
-        return
-    print(f"  自动同步按钮 → {sync_coords}")
+    btn_coords, sync_coords, lens_coords, export_coords = all_coords
+    print(f"  打开运动数据 → {btn_coords}")
+    print(f"  自动同步 → {sync_coords}")
+    print(f"  打开镜头配置 → {lens_coords}")
+    if export_coords:
+        print(f"  导出视频 → {export_coords}")
     
     # ── 选择要处理的素材 ──
     print()
-    defaults = [s for s in seq_list if "✅" in s]
-    chosen = osa_choose_list("选择要处理的素材（Cmd+点击可多选）", seq_list, defaults)
+    defaults = [s for s in item_list if "✅" in s]
+    chosen = osa_choose_list("选择要处理的素材（Cmd+点击可多选）", item_list, defaults)
     if not chosen:
         print("❌ 已取消")
         return
     
-    sequences = [parse_seq_name(s) for s in chosen]
-    print(f"  已选择 {len(sequences)} 个素材：")
-    for s in sequences:
+    items = [parse_seq_name(s) for s in chosen]
+    print(f"  已选择 {len(items)} 个素材：")
+    for s in items:
         print(f"    · {s}")
     
     # ── 同步超时设置 ──
@@ -527,13 +808,49 @@ def main():
             pass
     print(f"  同步超时 → {sync_timeout} 秒")
     
+    # ── 导出超时设置 ──
+    if mode == "video" and export_mode == "video":
+        export_timeout = cfg.get('export_timeout', 600)
+        etime_input = osa_text_input(
+            f"导出超时时间（秒），视频渲染比同步慢很多\n当前：{export_timeout} 秒",
+            str(export_timeout)
+        )
+        if etime_input:
+            try:
+                export_timeout = int(etime_input.strip())
+                if export_timeout < 60:
+                    export_timeout = 60
+                elif export_timeout > 3600:
+                    export_timeout = 3600
+            except:
+                pass
+        print(f"  导出超时 → {export_timeout} 秒")
+        
+        # ── 导出目录选择 ──
+        print()
+        print("【导出】选择视频导出目录")
+        export_dir_default = cfg.get('export_dir', base_dir)
+        export_dir = osa_choose_folder(
+            "选择稳定后视频的保存目录",
+            default_dir=export_dir_default if export_dir_default else base_dir
+        )
+        if not export_dir:
+            print("❌ 已取消")
+            return
+        print(f"  导出目录 → {export_dir}")
+    else:
+        export_dir = ""
+    
     # ── 预检 ──
     print()
     print("=" * 55)
     print("  预检文件...")
     print()
     
-    ok_list, fail_list = precheck(sequences, base_dir, gcsv_dir)
+    if mode == "dng":
+        ok_list, fail_list = precheck(items, base_dir, gcsv_dir)
+    else:
+        ok_list, fail_list = precheck_videos(items, base_dir, gcsv_dir)
     
     if fail_list:
         print("  ⚠️ 以下素材有文件缺失：")
@@ -542,7 +859,8 @@ def main():
         print()
         ans = osa_dialog(
             f"{len(fail_list)} 个素材文件缺失，将自动跳过。\n\n继续处理其余 {len(ok_list)} 个？",
-            ["取消", "继续"]
+            ["取消", "继续"],
+            default="继续"
         )
         if ans != "继续":
             print("❌ 已取消")
@@ -556,13 +874,22 @@ def main():
     print(f"  ✅ {len(ok_list)} 个素材通过预检，可以开始处理")
     
     # ── 最终确认 ──
+    export_info = ""
+    if mode == "video" and export_mode == "video":
+        export_info = f"导出目录：{export_dir}\n" \
+                     f"导出超时：{export_timeout} 秒\n"
     summary = (
         f"即将处理 {len(ok_list)} 个素材：\n\n"
+        f"模式：{'DNG 序列帧' if mode == 'dng' else '视频文件'}\n"
+        f"导出：{'GUI 导出稳定视频' if export_mode == 'video' else '保存 .gyroflow 项目'}\n"
         f"素材目录：{base_dir}\n"
         f"GCSV 目录：{gcsv_dir}\n"
-        f"打开文件按钮：({btn_coords[0]}, {btn_coords[1]})\n"
-        f"自动同步按钮：({sync_coords[0]}, {sync_coords[1]})\n"
-        f"同步超时：{sync_timeout} 秒\n\n"
+        f"镜头配置目录：{lens_dir}\n"
+        f"打开运动数据：({btn_coords[0]}, {btn_coords[1]})\n"
+        f"自动同步：({sync_coords[0]}, {sync_coords[1]})\n"
+        f"打开镜头配置：({lens_coords[0]}, {lens_coords[1]})\n"
+        f"同步超时：{sync_timeout} 秒\n"
+        f"{export_info}\n"
         f"素材列表：\n" +
         "\n".join(f"  · {s}" for s in ok_list)
     )
@@ -576,11 +903,18 @@ def main():
     save_config({
         "base_dir": base_dir,
         "gcsv_dir": gcsv_dir,
+        "lens_dir": lens_dir,
+        "export_dir": export_dir,
         "btn_coords": list(btn_coords),
         "sync_coords": list(sync_coords),
+        "lens_coords": list(lens_coords) if lens_coords else [],
+        "export_coords": list(export_coords) if export_coords else [],
         "last_sequences": ok_list,
         "sync_timeout": sync_timeout,
+        "export_timeout": export_timeout,
+        "export_mode": export_mode,
         "screen_resolution": f"{pyautogui.size().width}x{pyautogui.size().height}",
+        "mode": mode,
     })
     
     # ── 开始处理 ──
@@ -597,19 +931,19 @@ def main():
     start_time = time.time()
     total = len(ok_list)
     
-    for i, seq in enumerate(ok_list, 1):
+    for i, item in enumerate(ok_list, 1):
         print(f"\n{'─' * 40}")
-        print(f"【{i}/{total}】{seq}")
+        print(f"【{i}/{total}】{item}")
         
         item_start = time.time()
-        succ, msg = process_one(seq, base_dir, gcsv_dir, btn_coords, sync_coords, sync_timeout)
+        succ, msg = process_one(item, base_dir, gcsv_dir, lens_dir, export_dir, btn_coords, sync_coords, sync_timeout, mode, export_mode, export_coords, export_timeout, lens_coords)
         item_elapsed = time.time() - item_start
         
         if succ:
-            success_list.append(seq)
+            success_list.append(item)
             print(f"  ✅ 成功 ({format_time(item_elapsed)})")
         else:
-            fail_list.append(seq)
+            fail_list.append(item)
             print(f"  ❌ 失败: {msg} ({format_time(item_elapsed)})")
         
         # 进度预估
@@ -635,12 +969,16 @@ def main():
     
     osa_notify("Gyroflow 批量处理", f"完成！成功 {len(success_list)}，失败 {len(fail_list)}")
     
+    if mode == "video" and export_mode == "video":
+        save_location = "导出视频所在目录中"
+    else:
+        save_location = "各 DNG 文件夹中" if mode == "dng" else "视频所在目录中"
     finish_msg = (
         f"处理完成！\n\n"
         f"✅ 成功: {len(success_list)} 个\n"
         f"❌ 失败: {len(fail_list)} 个\n"
         f"⏱ 耗时: {format_time(elapsed)}\n\n"
-        f"项目文件已保存在各 DNG 文件夹中。"
+        f"项目文件已保存在{save_location}。"
     )
     
     if fail_list:
@@ -656,7 +994,7 @@ def main():
             retry_fail = []
             for i, seq in enumerate(fail_list, 1):
                 print(f"\n【重试 {i}/{len(fail_list)}】{seq}")
-                succ, msg = process_one(seq, base_dir, gcsv_dir, btn_coords, sync_coords, sync_timeout)
+                succ, msg = process_one(seq, base_dir, gcsv_dir, lens_dir, export_dir, btn_coords, sync_coords, sync_timeout, mode, export_mode, export_coords, export_timeout, lens_coords)
                 if succ:
                     retry_success.append(seq)
                     print(f"  ✅ 成功")
